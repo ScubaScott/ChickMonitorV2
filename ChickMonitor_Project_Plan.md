@@ -46,8 +46,8 @@ Design and build a second-generation smart chicken coop monitor and door control
 | F2 | **Remote manual door** | Trigger from HA dashboard or mobile |
 | F3 | **Food level alert** | Notify when hopper is low |
 | F4 | **Water level alert** | Notify when bowl/reservoir is low |
-| F5 | **Local display** | 2x 7-segment (TM1637 driver) showing daily egg count (0–99) |
-| F6 | **Local input — egg count** | Rotary encoder: turn = ±1, push-hold 2s = reset to 0 |
+| F5 | **Local display** | SSD1306 OLED (128×64, I2C) — shows egg count, temp/humidity, door state; extensible for menus |
+| F6 | **Local input — egg count** | Rotary encoder: turn = ±1, push-hold 2s = reset to 0; co-located with display in remote 3D-printed box |
 | F7 | **Nest box occupancy** | LD2410 mmWave — detects stationary hen in nest box |
 | F8 | **Temperature & humidity** | Environmental data reported to HA |
 | F9 | **Status LEDs** | WS2812B strip for power, door state, alert states |
@@ -62,8 +62,9 @@ Design and build a second-generation smart chicken coop monitor and door control
 - Power/energy monitoring of relay load
 - Food weight measurement (load cell + HX711)
 - Automatic water top-up (second relay + peristaltic pump)
+- Full menu/navigation UI via rotary encoder + SSD1306 (foundation already present in v1)
 - 4x4 keypad for direct numeric egg count entry
-- Full TFT display (ILI9341) for richer local UI
+- Full TFT display (ILI9341) if SSD1306 proves limiting (unlikely)
 
 ---
 
@@ -90,7 +91,8 @@ Design and build a second-generation smart chicken coop monitor and door control
 
 **Drive:** TR8 leadscrew (8mm diameter, 8mm lead) + NEMA 17 48mm (17HS8401, ~65 N·cm) + TMC2208  
 **Guide:** Heavy-duty full-extension ball-bearing drawer slide — 16" travel recommended  
-**Orientation:** Horizontal sliding; door parks to motor side when open
+**Orientation:** Horizontal sliding; door parks to motor side when open  
+**Door panel:** Lightweight wood — hardboard or thin plywood with a simple frame. Full seal not required; goal is predator exclusion and snow/wind blocking.
 
 #### Door Geometry
 
@@ -113,6 +115,7 @@ Design and build a second-generation smart chicken coop monitor and door control
 | Travel | 16" recommended (minimum 14") |
 | Material | Stainless or zinc-plated for moisture resistance |
 | Load rating | 100 lb+ |
+| Candidate | https://a.co/d/02JIuqZc |
 
 #### Limit Switch Mounting
 
@@ -122,6 +125,8 @@ Both switches mount to the **fixed member** (wall/frame side). A passive actuati
 |--------|----------|----------|
 | OPEN limit | Fixed member, fully-retracted position | Homing reference: trips when door fully open → zero step count |
 | CLOSED limit | Fixed member, fully-extended position | Safety cutoff at full-closed travel; also confirms closed state |
+
+**Limit switch:** V-153-1C25 (on hand)
 
 #### Motor and Leadscrew
 
@@ -137,25 +142,44 @@ Both switches mount to the **fixed member** (wall/frame side). A passive actuati
 
 ---
 
-### 3.3 Peripheral Component Selections
+### 3.3 Component Placement Philosophy
+
+Most sensors and user-interface components are **not** mounted inside the Hoffman enclosure. 3D-printed boxes/mounts will be designed and printed for each peripheral, placed in their optimal location:
+
+| Component | Location | Enclosure |
+|-----------|----------|-----------|
+| ESP32-S3, stepper driver, relays, power | Hoffman A806CH | Main enclosure, fixed to coop wall |
+| SSD1306 display + rotary encoder | Accessible coop wall or interior panel | 3D-printed remote UI box |
+| LD2410 mmWave | Near/above nest box | 3D-printed mount |
+| SHT31 temp/humidity | Coop interior, shaded from direct sunlight | 3D-printed vented mount |
+| HC-SR04 food level | Inside/above hopper | 3D-printed angled mount |
+| XKC-Y25 water level | Mounted on water reservoir wall | Direct adhesive or 3D-printed bracket |
+| WS2812B LED strip | Coop exterior or visible interior location | Exposed or weather-resistant channel |
+| Limit switches | Fixed side of drawer slide frame | Direct mount to frame |
+
+> **I2C cable run note:** The SSD1306 and SHT31 share I2C Bus 0. The SSD1306 is in a remote box, meaning the I2C bus runs over an external cable. Standard I2C (4.7 kΩ pull-ups) is reliable to ~1 meter. If the remote display box is further than ~1 meter from the Hoffman enclosure, reduce pull-ups to 2.2 kΩ or consider an I2C extender (P82B96 or similar). **Measure planned cable run in Phase 2 and select pull-up values accordingly.**
+
+---
+
+### 3.4 Peripheral Component Selections
 
 #### Sensors & Inputs
 
 | Component | Part | Bus / Interface | Notes |
 |-----------|------|-----------------|-------|
-| Temp / Humidity | SHT31 or AHT21 | I2C | Stable in outdoor/coop environment |
+| Temp / Humidity | SHT31 or AHT21 | I2C (Bus 0, addr 0x44) | Stable in outdoor/coop environment; in vented 3D-printed mount |
 | Food level | HC-SR04 (on hand) | GPIO trigger/echo | Distance from sensor to food surface; 5-sample median filter |
 | Water level | XKC-Y25 capacitive | GPIO (digital) | No exposed electrodes |
-| Nest box occupancy | LD2410 mmWave | UART | Detects stationary hen |
-| Door limit (open) | Roller microswitch SS-5GL | GPIO (digital in, pull-up) | Homing reference; zero at full open |
-| Door limit (closed) | Roller microswitch SS-5GL | GPIO (digital in, pull-up) | Safety cutoff + closed confirmation |
-| Rotary encoder | EC11 with push button | GPIO (A, B, SW) | Egg count ±1; push-hold 2s = reset |
+| Nest box occupancy | LD2410 mmWave | UART | Detects stationary hen; in 3D-printed mount near nest box |
+| Door limit (open) | V-153-1C25 roller microswitch | GPIO (digital in, pull-up) | Homing reference; zero at full open |
+| Door limit (closed) | V-153-1C25 roller microswitch | GPIO (digital in, pull-up) | Safety cutoff + closed confirmation |
+| Rotary encoder | EC11 with push button | GPIO (A, B, SW) | In remote UI box with display; egg count ±1; push-hold 2s = reset |
 
 #### Outputs & Actuators
 
 | Component | Part | Interface | Notes |
 |-----------|------|-----------|-------|
-| 7-segment display | TM1637 module (2-digit) | CLK + DIO (2 GPIOs) | Egg count 0–99 |
+| OLED display | SSD1306 128×64 I2C module | I2C (Bus 0, addr 0x3C) | In remote 3D-printed UI box with encoder; egg count, temp, door state |
 | Door stepper | NEMA 17 48mm, 17HS8401 | STEP / DIR / EN | Horizontal door via TR8 |
 | Stepper driver | TMC2208 | STEP / DIR / EN | Silent; 12V supply |
 | Relay | 5V single-channel relay module | GPIO | Pump, lamp, or other load |
@@ -167,21 +191,20 @@ Both switches mount to the **fixed member** (wall/frame side). A passive actuati
 | Rail | Source | Consumers |
 |------|--------|-----------|
 | 12V (main) | 12V 2A wall adapter | NEMA 17 via TMC2208 |
-| 5V | LM2596 buck converter from 12V main | Relay coil, TM1637, logic |
-| 3.3V | AMS1117-3.3 LDO from 5V | ESP32-S3, sensors, encoder |
+| 5V | LM2596 buck converter from 12V main | Relay coil, logic |
+| 3.3V | AMS1117-3.3 LDO from 5V | ESP32-S3, sensors, encoder, SSD1306 |
 
 > **Power architecture locked:** Single 12V main supply with LM2596 5V buck. One wall cable to enclosure; all rails derived internally. Simplifies enclosure entry and wiring.
 
 ---
 
-### 3.4 Bus / GPIO Map (Preliminary)
+### 3.5 Bus / GPIO Map (Preliminary)
 
 | Bus | Devices |
 |-----|---------|
-| I2C (Bus 0) | SHT31 temp/humidity |
+| I2C (Bus 0) | SHT31 temp/humidity (0x44) + SSD1306 display (0x3C) — shared bus, remote cable run, see pull-up note in §3.3 |
 | UART 0 | LD2410 mmWave |
 | UART 1 | Reserved for v2 camera / debug |
-| CLK + DIO | TM1637 7-segment (2 GPIOs) |
 | GPIO digital in | HC-SR04 trigger/echo, XKC-Y25, door limits ×2, encoder A/B/SW |
 | GPIO digital out | Relay, stepper STEP/DIR/EN, buzzer |
 | GPIO RMT | WS2812B LED strip |
@@ -201,11 +224,11 @@ Both switches mount to the **fixed member** (wall/frame side). A passive actuati
 | OTA updates | Built-in |
 | Stepper | `stepper:` component — native TMC2208/A4988 support |
 | Sensors | SHT31, HC-SR04, I2C, UART, binary sensors — first-class |
-| TM1637 | `display: platform: tm1637` |
+| OLED display | `display: platform: ssd1306_i2c` — 128×64; pages for egg count, env data, door state |
 | Rotary encoder | `rotary_encoder:` component |
 | NVS persistence | `globals: restore_value: true` — egg count only; **no door state written to NVS** |
 | Time | `time: platform: sntp` with validity check in lambda |
-| Custom logic | Lambda C++ for door state machine, homing routine, boot sequence |
+| Custom logic | Lambda C++ for door state machine, homing routine, boot sequence, display page logic |
 
 ### 4.2 Home Assistant Integration Points
 
@@ -277,10 +300,25 @@ Any state:
 Rotary encoder CW        → egg_count + 1 (max 99)
 Rotary encoder CCW       → egg_count - 1 (min 0)
 Push-hold 2 seconds      → egg_count reset to 0 (debounced)
-On any change            → update TM1637 + sync number.coop_egg_count to HA
+On any change            → update SSD1306 display + sync number.coop_egg_count to HA
 Midnight (HA automation) → number.set_value resets to 0
 Power-on restore         → globals restore_value from NVS (egg count only)
 ```
+
+### 4.5 Display Layout (SSD1306 128×64)
+
+Default display page (always-on or rotating):
+
+```
+┌────────────────────────┐
+│  EGGS: 07              │  ← Large font, primary info
+│  DOOR: CLOSED          │  ← Door state text
+│  72°F  58%RH           │  ← Temp + humidity
+│  [ALERT: FOOD LOW]     │  ← Alert line (blank when no alert)
+└────────────────────────┘
+```
+
+> v2 menu navigation (rotary encoder short-press = cycle pages, long-press = select) is a natural extension of the existing encoder and display — no hardware changes required.
 
 ---
 
@@ -290,26 +328,27 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 
 **Locked:**
 - [x] MCU: ESP32-S3, Firmware: ESPHome
-- [x] Display: TM1637 7-segment, 2-digit (no TFT in v1)
-- [x] Local input: rotary encoder only
+- [x] Display: SSD1306 OLED 128×64 I2C, mounted remotely in 3D-printed UI box with encoder
+- [x] Local input: rotary encoder only (in remote UI box)
 - [x] Food level: HC-SR04 (on hand)
 - [x] Door orientation: horizontal sliding
 - [x] Door guide: heavy-duty full-extension drawer slide, 16" travel, no soft-close
 - [x] Door opening: 12" × 12"; far-side lip 2"; motor-side clearance several feet
-- [x] Door panel: 13–14" wide; leadscrew travel ~305mm (~7,600 steps at 1/16)
+- [x] Door panel: lightweight wood (hardboard or thin plywood + simple frame); full seal not required
 - [x] Door drive: TR8 leadscrew + NEMA 17 48mm (17HS8401) + TMC2208
 - [x] Homing: always to OPEN limit on boot; zero at open
 - [x] Boot behavior: home to OPEN → SNTP check (30s timeout) → close if in schedule window; else stay open
 - [x] No door state written to NVS
 - [x] Manual close: does not cancel open schedule
-- [x] Occupancy: LD2410 mmWave
+- [x] Occupancy: LD2410 mmWave, in 3D-printed mount near nest box
 - [x] Power: 12V main + LM2596 5V buck; 3.3V LDO from 5V
-- [x] Enclosure: Hoffman A806CH (6"×8"); A1008CH fallback
+- [x] Enclosure: Hoffman A806CH (6"×8"); A1008CH fallback (main electronics only)
 - [x] Camera GPIO/header reserved for v2
+- [x] Sensor placement: 3D-printed mounts/boxes; most sensors external to Hoffman enclosure
 
 **Open:**
-- [ ] Drawer slide specific part number and source — **Phase 1**
-- [ ] Door panel material — **Phase 2**
+- [ ] Drawer slide specific part number confirmed — **Phase 1**
+- [ ] SSD1306 I2C cable run distance measured → pull-up value confirmed — **Phase 2**
 
 **Checkpoint 0 Exit Criteria:**
 > All hardware, firmware, and behavior decisions documented and locked. No ambiguity on v1 scope.
@@ -320,15 +359,17 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 
 **Tasks:**
 - [ ] Source TR8 leadscrew (≥350mm), NEMA 17 17HS8401, TMC2208, flexible coupler, SK8 bearing block
-- [ ] Select and order 16" full-extension no-soft-close slide (stainless or zinc, 100 lb+):
-    - https://a.co/d/02JIuqZc
-- [ ] Select limit switches: V-153-1C25 (on hand)
-- [ ] Select SSD1306 disaply, it will be mounted remotely, not in the enclosere, a seperate 3d printed box will be made for the rotary switch and display.
-- [ ] Select LD2410 mmWave module, mounted in it's own 3d printed box, and mounted near next box
+- [ ] Confirm and order 16" full-extension no-soft-close slide (stainless or zinc, 100 lb+):
+    - Candidate: https://a.co/d/02JIuqZc — confirm no soft-close detent before ordering
+- [ ] Confirm limit switches: V-153-1C25 (on hand)
+- [ ] Select SSD1306 128×64 I2C module (3.3V compatible; 4-pin I2C breakout preferred)
+- [ ] Select EC11 rotary encoder with push button
+- [ ] Select LD2410 mmWave module
 - [ ] Select LM2596 5V buck module
+- [ ] Select SHT31 (or AHT21) temp/humidity breakout
 - [ ] Create full BOM: part, qty, supplier, unit cost, link
-- [ ] Calculate power budget (mA per rail, worst case with 1.2A RMS motor)
-- [ ] Confirm 12V 2A supply is adequate (motor stall + all logic)
+- [ ] Calculate power budget (mA per rail, worst case with 1.2A RMS motor + all peripherals)
+- [ ] Confirm 12V 2A supply is adequate (motor stall + all logic + SSD1306 ~20mA)
 - [ ] Identify long-lead parts; order early
 - [ ] Order all components
 
@@ -340,21 +381,24 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 ### 🔲 Phase 2 — Mechanical & Enclosure Design
 
 **Tasks:**
-- [ ] Determine door panel material (aluminum sheet, PVC board, or exterior plywood)
-- [ ] Fabricate or source door panel (13–14" wide × ~13" tall)
+- [ ] Fabricate door panel: lightweight wood (hardboard or thin plywood + simple framed border), 13–14" wide × ~13" tall
 - [ ] Plan motor mount at one end of coop frame; leadscrew parallel to slide
 - [ ] Plan SK8 bearing block position at far end of leadscrew
 - [ ] Attach TR8 nut bracket to door panel / slide moving member
 - [ ] Plan limit switch positions on fixed member; fabricate actuating tabs on moving member
 - [ ] Verify door clears opening fully when open; verify 2" lip overlap when closed
-- [ ] Plan HC-SR04 mount angle inside hopper
-- [ ] Plan water sensor mount
-- [ ] Plan TM1637 and encoder position on A806CH faceplate
-- [ ] Reserve camera position (v2)
+- [ ] Design and print 3D-printed remote UI box (SSD1306 + rotary encoder); route I2C + encoder wires back to Hoffman enclosure
+- [ ] **Measure I2C cable run from Hoffman enclosure to remote UI box; confirm pull-up resistor values (≤2.2 kΩ if >1 meter)**
+- [ ] Design and print LD2410 mount near nest box; plan UART cable routing
+- [ ] Design and print vented SHT31 mount (shaded, not in direct sun or heat)
+- [ ] Design and print HC-SR04 mount angle inside hopper
+- [ ] Plan XKC-Y25 mount on water reservoir
+- [ ] Plan TM1637 breakout on A806CH faceplate (replaced by external display — confirm only encoder cable entry on faceplate)
+- [ ] Reserve camera position on Hoffman faceplate (v2)
 - [ ] Plan cable routing: all door wiring to fixed frame; no flex wiring to door panel
 
 **Checkpoint 2 Exit Criteria:**
-> Door mechanism dimensionally validated. All components fit. No cable routing to moving parts.
+> Door mechanism dimensionally validated. All 3D-printed mounts designed. I2C cable run measured and pull-up values confirmed. No cable routing to moving parts.
 
 ---
 
@@ -364,6 +408,7 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 - [ ] Draw full schematic (KiCad or EasyEDA)
 - [ ] Map every GPIO — no conflicts, no floating inputs
 - [ ] Pull-ups on all digital inputs (limit switches, encoder SW, water sensor)
+- [ ] I2C pull-up values selected based on measured cable run (§ Phase 2)
 - [ ] RC debounce on limit switch inputs
 - [ ] Design power rails: 12V in → LM2596 5V → AMS1117 3.3V
 - [ ] Decoupling capacitors on all power pins
@@ -371,11 +416,11 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 - [ ] Current-limiting resistors for status LEDs
 - [ ] ESD / reverse-polarity protection on external connectors
 - [ ] Reserve camera header (DVP pinout, unpopulated)
-- [ ] Define connectors: JST-PH for sensors, screw terminals for motor/power
+- [ ] Define connectors: JST-PH for sensors/display, screw terminals for motor/power
 - [ ] Decide: perfboard vs. custom PCB
 
 **Checkpoint 3 Exit Criteria:**
-> Schematic complete and reviewed. GPIO map locked. Power budget validated in schematic.
+> Schematic complete and reviewed. GPIO map locked. Power budget validated in schematic. I2C pull-ups confirmed.
 
 ---
 
@@ -392,7 +437,7 @@ Power-on restore         → globals restore_value from NVS (egg count only)
   - [ ] Rotary encoder A/B/SW
   - [ ] Both limit switches (logic levels, pull-up behavior)
 - [ ] Test each output individually:
-  - [ ] TM1637 digit render 0–9
+  - [ ] SSD1306: render egg count, door state, temp/humidity page; confirm readable at cable run distance
   - [ ] NEMA 17 + TMC2208: rotate, reverse, homing to OPEN limit
   - [ ] Relay on/off
   - [ ] WS2812B color test
@@ -400,7 +445,7 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 - [ ] Full ESPHome config — all entities visible in HA
 
 **Checkpoint 4 Exit Criteria:**
-> All subsystems functional in HA. Homing to OPEN limit works on bench. No pin conflicts.
+> All subsystems functional in HA. Homing to OPEN limit works on bench. SSD1306 renders correctly over full cable run. No pin conflicts.
 
 ---
 
@@ -425,8 +470,9 @@ Power-on restore         → globals restore_value from NVS (egg count only)
   - [ ] CW/CCW ±1 (floor 0, ceiling 99)
   - [ ] Push-hold 2s reset with debounce
   - [ ] NVS persistence (egg count only)
-  - [ ] TM1637 display update
+  - [ ] SSD1306 display update
   - [ ] HA number sync
+- [ ] SSD1306 display pages (egg count, env data, door state, alert line)
 - [ ] Nest box occupancy (LD2410 → HA binary sensor)
 - [ ] LED status logic (open, moving, alert, error states)
 - [ ] Relay control from HA
@@ -434,7 +480,7 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 - [ ] Code review and lambda documentation
 
 **Checkpoint 5 Exit Criteria:**
-> All v1 features work end-to-end. Boot sequence, homing, SNTP check, and post-homing schedule evaluation all tested. ERROR state and manual recovery tested. No critical bugs.
+> All v1 features work end-to-end. Boot sequence, homing, SNTP check, and post-homing schedule evaluation all tested. ERROR state and manual recovery tested. SSD1306 display pages correct. No critical bugs.
 
 ---
 
@@ -463,25 +509,26 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 - [ ] Install drawer slide; attach TR8 nut bracket to moving member / door panel
 - [ ] Mount limit switches on fixed member; attach actuating tabs to moving member
 - [ ] Route all cables to fixed frame — no flex wiring to door panel
-- [ ] Mount TM1637 and encoder on A806CH faceplate
-- [ ] Install HC-SR04 in hopper, water sensor, LED strip
+- [ ] Install 3D-printed remote UI box (SSD1306 + encoder); dress I2C and encoder cable
+- [ ] Install 3D-printed LD2410 mount near nest box; route UART cable
+- [ ] Install HC-SR04 in hopper, water sensor, SHT31 in vented mount, LED strip
 - [ ] Verify all functions after final assembly
 - [ ] 24-hour soak test (door cycles, boot/homing, sensors, HA monitoring)
 
 **Checkpoint 7 Exit Criteria:**
-> Device operates in enclosure. 24-hour soak test passes. No flex wiring to moving parts.
+> Device operates in enclosure. 24-hour soak test passes. No flex wiring to moving parts. All 3D-printed mounts installed and functional.
 
 ---
 
 ### 🔲 Phase 8 — Testing, Validation & Documentation
 
 **Tasks:**
-- [ ] Hardware docs (schematic PDF, BOM, wiring, door mechanism photos)
+- [ ] Hardware docs (schematic PDF, BOM, wiring, door mechanism photos, 3D print files)
 - [ ] Firmware docs (YAML with comments, state machine diagram, config guide)
 - [ ] HA setup guide (device add, automation templates, error recovery procedure)
 - [ ] Document known limitations
 - [ ] Photograph final build
-- [ ] Final git commit / backup all source files
+- [ ] Final git commit / backup all source files + STL/print files
 - [ ] Define and prioritize v2 backlog
 
 **Checkpoint 8 Exit Criteria:**
@@ -494,7 +541,7 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Drawer slide binds or corrodes outdoors | Medium | High | Stainless or zinc slide; lubricate at soak test and periodically |
-| Soft-close detent on slide fights stepper | High if wrong slide | Medium | Explicitly spec no-soft-close in Phase 1 BOM |
+| Soft-close detent on slide fights stepper | High if wrong slide | Medium | Explicitly spec no-soft-close in Phase 1 BOM; verify before ordering |
 | Door panel misaligned on slide (racking) | Medium | Medium | TR8 nut and slide moving member both rigid to same panel |
 | SNTP unavailable for extended period after boot | Low | Low | Fail-open; HA sends alert; schedule closes when time syncs |
 | Homing move during nighttime power blip briefly opens door | Low | Low | Accepted tradeoff vs. complexity of NVS state restore |
@@ -504,6 +551,8 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 | Wi-Fi dropout causes missed schedule | Low | High | ESPHome time caches schedule locally; operates offline |
 | Hoffman A806CH too tight | Medium | Medium | Validate in Phase 2; A1008CH fallback |
 | 12V noise affecting sensor readings | Medium | Medium | Decouple all rails; separate motor and sensor traces in Phase 3 |
+| I2C signal degradation over long cable run to SSD1306 | Medium | Medium | Measure cable run in Phase 2; reduce pull-ups to ≤2.2 kΩ if >1 meter; use twisted pair or shielded cable |
+| Lightweight wood door warps in moisture/cold | Low | Low | Simple frame stiffens panel; no seal required; monitor after installation |
 
 ---
 
@@ -515,7 +564,8 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 | High | **Power / energy monitoring** | INA219 or PZEM-004T on relay load |
 | Medium | **Food weight (load cell)** | HX711 + load cell; more precise than distance sensor |
 | Medium | **Automatic water top-up** | Second relay + peristaltic pump |
-| Medium | **TFT display (ILI9341)** | Richer local UI if 7-segment proves limiting |
+| Medium | **Rotary encoder menu navigation** | SSD1306 hardware already present in v1; extend display firmware only |
+| Low | **TFT display (ILI9341)** | Only if SSD1306 128×64 proves limiting — unlikely |
 | Low | **4x4 keypad** | Direct numeric entry; only if encoder proves awkward |
 | Low | **Pet/predator recognition** | Camera AI via ESP-WHO or HA offload |
 
@@ -535,14 +585,18 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 | — | No door state written to NVS | Simplicity; homing is always the recovery path | Locked |
 | — | Manual close/open: does not modify schedule | Predictable; schedule always resumes | Locked |
 | — | Door geometry: 12"×12" opening, 2" far lip, several feet motor side | Confirmed installation dimensions | Locked |
-| — | Display: TM1637 7-segment 2-digit | 2 GPIOs; ESPHome native | Locked |
+| — | Display: SSD1306 OLED 128×64 I2C | More info than 7-seg; I2C shares Bus 0 with SHT31; ESPHome native; extensible for v2 menus | Locked |
+| — | Display location: remote 3D-printed UI box with rotary encoder | Optimal user access; keep Hoffman enclosure clean | Locked |
 | — | Local input: rotary encoder only | 3 GPIOs; keypad to v2 | Locked |
 | — | Occupancy: LD2410 mmWave | Detects stationary hen; PIR misses still animals | Locked |
 | — | Food level: HC-SR04 | On hand; median filter for dust | Locked |
 | — | Power: 12V main + LM2596 5V buck + AMS1117 3.3V | Single wall cable; all rails internal | Locked |
-| — | Enclosure: Hoffman A806CH (6"×8") | Must fit; A1008CH fallback | Locked |
+| — | Enclosure: Hoffman A806CH (6"×8") | Main electronics only; A1008CH fallback | Locked |
 | — | Camera: GPIO reserved, header unpopulated in v1 | v2 egg detection path | Locked |
+| — | Door panel: lightweight wood (hardboard or thin plywood + frame) | Easy to fabricate; full seal not required; predator and snow exclusion only | Locked |
+| — | Sensor placement: 3D-printed external mounts | Optimal sensor positioning; keeps Hoffman enclosure uncluttered | Locked |
+| — | Limit switches: V-153-1C25 (on hand) | Standard roller microswitch; proven reliable | Locked |
 
 ---
 
-*Document version 1.4 — Boot behavior locked (home-to-open → SNTP check → schedule evaluate). No NVS door state. Door geometry confirmed (12"×12", 16" slide). Power architecture locked (12V + LM2596 buck). All Phase 0 decisions resolved.*
+*Document version 1.5 — SSD1306 OLED replaces TM1637 throughout. Door material locked (lightweight wood). Sensor placement philosophy documented (3D-printed external mounts). I2C cable run flag added. Component placement table added (§3.3). Display layout sketch added (§4.5). V-153-1C25 limit switch noted.*
