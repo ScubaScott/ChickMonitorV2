@@ -320,10 +320,11 @@ Power-on restore         → globals restore_value from NVS (egg count only)
 
 **Tasks:**
 - [ ] Source TR8 leadscrew (≥350mm), NEMA 17 17HS8401, TMC2208, flexible coupler, SK8 bearing block
-- [ ] Select and order 16" full-extension no-soft-close slide (stainless or zinc, 100 lb+)
-- [ ] Select limit switches (SS-5GL or equivalent); design actuating tab
-- [ ] Select TM1637 module; verify faceplate fit in A806CH
-- [ ] Select LD2410 mmWave module
+- [ ] Select and order 16" full-extension no-soft-close slide (stainless or zinc, 100 lb+):
+    - https://a.co/d/02JIuqZc
+- [ ] Select limit switches: V-153-1C25 (on hand)
+- [ ] Select SSD1306 disaply, it will be mounted remotely, not in the enclosere, a seperate 3d printed box will be made for the rotary switch and display.
+- [ ] Select LD2410 mmWave module, mounted in it's own 3d printed box, and mounted near next box
 - [ ] Select LM2596 5V buck module
 - [ ] Create full BOM: part, qty, supplier, unit cost, link
 - [ ] Calculate power budget (mA per rail, worst case with 1.2A RMS motor)
