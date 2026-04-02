@@ -52,9 +52,10 @@ Design and build a second-generation smart chicken coop monitor and door control
 | F8 | **Temperature & humidity** | Environmental data reported to HA |
 | F9 | **Status LEDs** | WS2812B strip for power, door state, alert states |
 | F10 | **Door drive — horizontal leadscrew** | NEMA 17 48mm + TR8 leadscrew + TMC2208; door rides on heavy-duty drawer slide |
-| F11 | **Relay output** | Switch a connected load (water pump, heat lamp, etc.) |
+| F11 | **Relay output** | Switch a connected load (water heater/de-icer, pump, heat lamp, etc.) |
 | F12 | **Wi-Fi OTA firmware updates** | Reflash without physical access |
 | F13 | **Power loss recovery** | Fail-open by design; time-aware post-homing schedule check |
+| F14 | **Egg production analytics** | InfluxDB time-series storage + Grafana dashboards; multi-year history; historical import supported |
 
 ### v2 — Future (Scoped Out of v1)
 
@@ -182,7 +183,7 @@ Most sensors and user-interface components are **not** mounted inside the Hoffma
 | OLED display | SSD1306 128×64 I2C module | I2C (Bus 0, addr 0x3C) | In remote 3D-printed UI box with encoder; egg count, temp, door state |
 | Door stepper | NEMA 17 48mm, 17HS8401 | STEP / DIR / EN | Horizontal door via TR8 |
 | Stepper driver | TMC2208 | STEP / DIR / EN | Silent; 12V supply |
-| Relay | 5V single-channel relay module | GPIO | Pump, lamp, or other load |
+| Relay | 5V single-channel relay module | GPIO | Water heater/de-icer, pump, or other load |
 | LED strip | WS2812B addressable | GPIO (RMT) | Door state and alert status |
 | Buzzer (optional) | Passive piezo | GPIO (PWM) | May be omitted |
 
@@ -210,6 +211,8 @@ Most sensors and user-interface components are **not** mounted inside the Hoffma
 | GPIO RMT | WS2812B LED strip |
 | Camera DVP header | Reserved, unpopulated in v1 |
 
+> **I2C note:** SSD1306 at 0x3C and SHT31 at 0x44 — no address conflict. SSD1306 is remote over external cable; keep pull-ups at 4.7 kΩ for runs ≤1m; reduce to 2.2 kΩ or add P82B96 extender for longer runs. Measure actual cable run in Phase 2.
+
 > Final GPIO pin assignments are a Phase 3 deliverable.
 
 ---
@@ -228,9 +231,39 @@ Most sensors and user-interface components are **not** mounted inside the Hoffma
 | Rotary encoder | `rotary_encoder:` component |
 | NVS persistence | `globals: restore_value: true` — egg count only; **no door state written to NVS** |
 | Time | `time: platform: sntp` with validity check in lambda |
-| Custom logic | Lambda C++ for door state machine, homing routine, boot sequence, display page logic |
+| Custom logic | Lambda C++ for door state machine, homing routine, boot sequence |
 
-### 4.2 Home Assistant Integration Points
+### 4.2 Analytics Stack — InfluxDB + Grafana
+
+Egg production history is stored in InfluxDB (time-series database) and visualized in Grafana. Both run as Home Assistant add-ons — no separate server required.
+
+**Data flow:**
+
+```
+ESP32-S3 (ESPHome)
+  └── number.coop_egg_count → HA entity
+        └── HA influxdb: integration → InfluxDB (time-series DB)
+              └── Grafana queries InfluxDB → production dashboards
+```
+
+**Recording strategy (Option 1 — derive from counter):**  
+InfluxDB records every state change of `number.coop_egg_count`. The daily egg total is derived at query time as `max(egg_count)` for each calendar day, since the counter only increases during the day and resets to 0 at midnight. No additional HA entities or firmware changes are required.
+
+**Retention:** Configured for indefinite retention — suitable for multi-year production tracking.
+
+**Historical import:** Prior egg count records can be imported via CSV using the InfluxDB CLI or a short Python script against the InfluxDB HTTP API. See `InfluxDB_Grafana_Setup.md` for the import procedure.
+
+#### Target Grafana Dashboards
+
+| Dashboard | Description |
+|-----------|-------------|
+| Daily production | Eggs per day, rolling 30/90 days |
+| Weekday breakdown | Average eggs by day of week (Mon–Sun) |
+| Monthly totals | Bar chart, year-over-year comparison |
+| Yearly curve | Seasonal production trend — identifies winter slowdown |
+| All-time record | Cumulative total and personal-best day |
+
+### 4.3 Home Assistant Integration Points
 
 | HA Entity | Type | Source |
 |-----------|------|--------|
@@ -240,14 +273,14 @@ Most sensors and user-interface components are **not** mounted inside the Hoffma
 | `binary_sensor.coop_food_low` | Binary Sensor | HC-SR04 threshold |
 | `binary_sensor.coop_water_low` | Binary Sensor | XKC-Y25 |
 | `binary_sensor.coop_nest_occupied` | Binary Sensor | LD2410 |
-| `number.coop_egg_count` | Number | Rotary encoder, synced to HA |
+| `number.coop_egg_count` | Number | Rotary encoder, synced to HA; forwarded to InfluxDB |
 | `button.coop_door_open` | Button | Manual open command |
 | `button.coop_door_close` | Button | Manual close (schedule resumes unchanged) |
 | `sensor.coop_door_state` | Text Sensor | open / closed / moving / homing / error |
 | `switch.coop_relay` | Switch | Controls relay output |
 | `light.coop_leds` | Light | WS2812B strip |
 
-### 4.3 Door State Machine
+### 4.4 Door State Machine
 
 **Safety contract: the door always fails open. No door state is written to NVS.**
 
@@ -294,13 +327,14 @@ Any state:
         └── Manual open/close commands still accepted in ERROR state
 ```
 
-### 4.4 Egg Count Logic
+### 4.5 Egg Count Logic
 
 ```
 Rotary encoder CW        → egg_count + 1 (max 99)
 Rotary encoder CCW       → egg_count - 1 (min 0)
 Push-hold 2 seconds      → egg_count reset to 0 (debounced)
 On any change            → update SSD1306 display + sync number.coop_egg_count to HA
+                           → HA influxdb: integration forwards change to InfluxDB
 Midnight (HA automation) → number.set_value resets to 0
 Power-on restore         → globals restore_value from NVS (egg count only)
 ```
@@ -328,8 +362,8 @@ Default display page (always-on or rotating):
 
 **Locked:**
 - [x] MCU: ESP32-S3, Firmware: ESPHome
-- [x] Display: SSD1306 OLED 128×64 I2C, mounted remotely in 3D-printed UI box with encoder
-- [x] Local input: rotary encoder only (in remote UI box)
+- [x] Display: SSD1306 OLED 128×64, I2C, remote 3D-printed UI box with rotary encoder
+- [x] Local input: rotary encoder only
 - [x] Food level: HC-SR04 (on hand)
 - [x] Door orientation: horizontal sliding
 - [x] Door guide: heavy-duty full-extension drawer slide, 16" travel, no soft-close
@@ -340,15 +374,17 @@ Default display page (always-on or rotating):
 - [x] Boot behavior: home to OPEN → SNTP check (30s timeout) → close if in schedule window; else stay open
 - [x] No door state written to NVS
 - [x] Manual close: does not cancel open schedule
-- [x] Occupancy: LD2410 mmWave, in 3D-printed mount near nest box
+- [x] Occupancy: LD2410 mmWave
 - [x] Power: 12V main + LM2596 5V buck; 3.3V LDO from 5V
 - [x] Enclosure: Hoffman A806CH (6"×8"); A1008CH fallback (main electronics only)
 - [x] Camera GPIO/header reserved for v2
 - [x] Sensor placement: 3D-printed mounts/boxes; most sensors external to Hoffman enclosure
+- [x] Analytics: InfluxDB + Grafana (HA add-ons); Option 1 daily total derivation; indefinite retention
 
 **Open:**
-- [ ] Drawer slide specific part number confirmed — **Phase 1**
-- [ ] SSD1306 I2C cable run distance measured → pull-up value confirmed — **Phase 2**
+- [ ] Drawer slide specific part number and source — **Phase 1**
+- [ ] Door panel material — **Phase 2**
+- [ ] SSD1306 remote cable run length and pull-up confirmation — **Phase 2**
 
 **Checkpoint 0 Exit Criteria:**
 > All hardware, firmware, and behavior decisions documented and locked. No ambiguity on v1 scope.
@@ -408,7 +444,6 @@ Default display page (always-on or rotating):
 - [ ] Draw full schematic (KiCad or EasyEDA)
 - [ ] Map every GPIO — no conflicts, no floating inputs
 - [ ] Pull-ups on all digital inputs (limit switches, encoder SW, water sensor)
-- [ ] I2C pull-up values selected based on measured cable run (§ Phase 2)
 - [ ] RC debounce on limit switch inputs
 - [ ] Design power rails: 12V in → LM2596 5V → AMS1117 3.3V
 - [ ] Decoupling capacitors on all power pins
@@ -436,6 +471,7 @@ Default display page (always-on or rotating):
   - [ ] LD2410 occupancy detection via UART
   - [ ] Rotary encoder A/B/SW
   - [ ] Both limit switches (logic levels, pull-up behavior)
+  - [ ] SSD1306 OLED over remote cable
 - [ ] Test each output individually:
   - [ ] SSD1306: render egg count, door state, temp/humidity page; confirm readable at cable run distance
   - [ ] NEMA 17 + TMC2208: rotate, reverse, homing to OPEN limit
@@ -443,16 +479,17 @@ Default display page (always-on or rotating):
   - [ ] WS2812B color test
 - [ ] Wire all subsystems; confirm no conflicts
 - [ ] Full ESPHome config — all entities visible in HA
+- [ ] Confirm `number.coop_egg_count` changes appear in InfluxDB
 
 **Checkpoint 4 Exit Criteria:**
-> All subsystems functional in HA. Homing to OPEN limit works on bench. SSD1306 renders correctly over full cable run. No pin conflicts.
+> All subsystems functional in HA. Homing to OPEN limit works on bench. No pin conflicts. SSD1306 renders correctly over full cable run. InfluxDB receiving egg count data.
 
 ---
 
 ### 🔲 Phase 5 — Firmware Development
 
 **Tasks:**
-- [ ] Boot / homing sequence (Section 4.3):
+- [ ] Boot / homing sequence (Section 4.4):
   - [ ] Home to OPEN limit at reduced speed on every boot
   - [ ] SNTP validity check with 30s timeout
   - [ ] Post-homing schedule evaluation (close if in window and time confirmed)
@@ -470,8 +507,8 @@ Default display page (always-on or rotating):
   - [ ] CW/CCW ±1 (floor 0, ceiling 99)
   - [ ] Push-hold 2s reset with debounce
   - [ ] NVS persistence (egg count only)
-  - [ ] SSD1306 display update
-  - [ ] HA number sync
+  - [ ] SSD1306 display update (egg count + door state)
+  - [ ] HA number sync → InfluxDB forwarding via HA integration
 - [ ] SSD1306 display pages (egg count, env data, door state, alert line)
 - [ ] Nest box occupancy (LD2410 → HA binary sensor)
 - [ ] LED status logic (open, moving, alert, error states)
@@ -480,24 +517,29 @@ Default display page (always-on or rotating):
 - [ ] Code review and lambda documentation
 
 **Checkpoint 5 Exit Criteria:**
-> All v1 features work end-to-end. Boot sequence, homing, SNTP check, and post-homing schedule evaluation all tested. ERROR state and manual recovery tested. SSD1306 display pages correct. No critical bugs.
+> All v1 features work end-to-end. Boot sequence, homing, SNTP check, and post-homing schedule evaluation all tested. ERROR state and manual recovery tested.SSD1306 display pages correct. No critical bugs.
 
 ---
 
 ### 🔲 Phase 6 — Home Assistant Integration & Automations
 
 **Tasks:**
+- [ ] Install InfluxDB add-on; create `chickmonitor` database with infinite retention policy
+- [ ] Configure HA `influxdb:` integration to forward `number.coop_egg_count` to InfluxDB
+- [ ] Install Grafana add-on; add InfluxDB as data source
+- [ ] Build Grafana dashboards (see Section 4.2 target list)
+- [ ] Verify daily total derivation: `max(egg_count)` per calendar day returns correct values
 - [ ] HA dashboard (door state, food/water, egg count, temp/humidity, nest occupancy)
 - [ ] Door schedule automations (open and close)
 - [ ] Error alert automation (door error → mobile push notification)
 - [ ] Food/water alert automations
-- [ ] Midnight egg count reset
+- [ ] Midnight egg count reset automation
 - [ ] Nest occupancy log (placeholder for v2 camera trigger)
 - [ ] Test all automations including power-loss recovery scenario
 - [ ] Logbook entries for door events and daily egg totals
 
 **Checkpoint 6 Exit Criteria:**
-> Dashboard and automations complete. Power-loss scenario tested end-to-end.
+> Dashboard and automations complete. InfluxDB receiving data and Grafana dashboards rendering correctly. Power-loss scenario tested end-to-end.
 
 ---
 
@@ -513,26 +555,28 @@ Default display page (always-on or rotating):
 - [ ] Install 3D-printed LD2410 mount near nest box; route UART cable
 - [ ] Install HC-SR04 in hopper, water sensor, SHT31 in vented mount, LED strip
 - [ ] Verify all functions after final assembly
-- [ ] 24-hour soak test (door cycles, boot/homing, sensors, HA monitoring)
+- [ ] 24-hour soak test (door cycles, boot/homing, sensors, HA monitoring, InfluxDB data continuity)
 
 **Checkpoint 7 Exit Criteria:**
-> Device operates in enclosure. 24-hour soak test passes. No flex wiring to moving parts. All 3D-printed mounts installed and functional.
+> Device operates in enclosure. 24-hour soak test passes. No flex wiring to moving parts. InfluxDB logging continuously.
 
 ---
 
 ### 🔲 Phase 8 — Testing, Validation & Documentation
 
 **Tasks:**
-- [ ] Hardware docs (schematic PDF, BOM, wiring, door mechanism photos, 3D print files)
+- [ ] Hardware docs (schematic PDF, BOM, wiring, door mechanism photos)
 - [ ] Firmware docs (YAML with comments, state machine diagram, config guide)
 - [ ] HA setup guide (device add, automation templates, error recovery procedure)
+- [ ] Import historical egg count data into InfluxDB (see `InfluxDB_Grafana_Setup.md`)
+- [ ] Validate historical data appears correctly in all Grafana dashboards
 - [ ] Document known limitations
 - [ ] Photograph final build
-- [ ] Final git commit / backup all source files + STL/print files
+- [ ] Final git commit / backup all source files
 - [ ] Define and prioritize v2 backlog
 
 **Checkpoint 8 Exit Criteria:**
-> Documentation complete. Device in daily use. v2 backlog defined.
+> Documentation complete. Historical data imported and verified. Device in daily use. v2 backlog defined.
 
 ---
 
@@ -541,7 +585,7 @@ Default display page (always-on or rotating):
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Drawer slide binds or corrodes outdoors | Medium | High | Stainless or zinc slide; lubricate at soak test and periodically |
-| Soft-close detent on slide fights stepper | High if wrong slide | Medium | Explicitly spec no-soft-close in Phase 1 BOM; verify before ordering |
+| Soft-close detent on slide fights stepper | High if wrong slide | Medium | Explicitly spec no-soft-close in Phase 1 BOM |
 | Door panel misaligned on slide (racking) | Medium | Medium | TR8 nut and slide moving member both rigid to same panel |
 | SNTP unavailable for extended period after boot | Low | Low | Fail-open; HA sends alert; schedule closes when time syncs |
 | Homing move during nighttime power blip briefly opens door | Low | Low | Accepted tradeoff vs. complexity of NVS state restore |
@@ -553,6 +597,7 @@ Default display page (always-on or rotating):
 | 12V noise affecting sensor readings | Medium | Medium | Decouple all rails; separate motor and sensor traces in Phase 3 |
 | I2C signal degradation over long cable run to SSD1306 | Medium | Medium | Measure cable run in Phase 2; reduce pull-ups to ≤2.2 kΩ if >1 meter; use twisted pair or shielded cable |
 | Lightweight wood door warps in moisture/cold | Low | Low | Simple frame stiffens panel; no seal required; monitor after installation |
+| InfluxDB data loss on HA host failure | Low | Medium | Periodic InfluxDB backup; HA snapshot includes add-on data |
 
 ---
 
@@ -596,7 +641,10 @@ Default display page (always-on or rotating):
 | — | Door panel: lightweight wood (hardboard or thin plywood + frame) | Easy to fabricate; full seal not required; predator and snow exclusion only | Locked |
 | — | Sensor placement: 3D-printed external mounts | Optimal sensor positioning; keeps Hoffman enclosure uncluttered | Locked |
 | — | Limit switches: V-153-1C25 (on hand) | Standard roller microswitch; proven reliable | Locked |
+| — | Egg analytics: InfluxDB + Grafana as HA add-ons | Time-series DB purpose-built for this workload; local; no cloud | Locked |
+| — | Egg daily total: Option 1 — max(egg_count) per day at query time | No extra entities or firmware; counter only increases intra-day | Locked |
+| — | InfluxDB retention: indefinite | Multi-year production history required | Locked |
 
 ---
 
-*Document version 1.5 — SSD1306 OLED replaces TM1637 throughout. Door material locked (lightweight wood). Sensor placement philosophy documented (3D-printed external mounts). I2C cable run flag added. Component placement table added (§3.3). Display layout sketch added (§4.5). V-153-1C25 limit switch noted.*
+*Document version 1.6 — Added egg production analytics (F14): InfluxDB + Grafana as HA add-ons, Option 1 daily total derivation, indefinite retention, historical import. Updated display from TM1637 to SSD1306 OLED in remote 3D-printed UI box. I2C bus map updated (SSD1306 0x3C, SHT31 0x44). Phase 6 and Phase 8 tasks updated. Risk register and decisions log updated.*
